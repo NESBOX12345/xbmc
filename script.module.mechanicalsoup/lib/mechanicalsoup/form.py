@@ -1,8 +1,11 @@
 from __future__ import print_function
 import copy
+import io
 import warnings
-from .utils import LinkNotFoundError
+
 from bs4 import BeautifulSoup
+
+from .utils import LinkNotFoundError, is_multipart_file_upload
 
 
 class InvalidFormMethod(LinkNotFoundError):
@@ -67,6 +70,7 @@ class Form(object):
             i = self.form.find("input", {"name": name})
             if not i:
                 raise InvalidFormMethod("No input field named " + name)
+            self._assert_valid_file_upload(i, value)
             i["value"] = value
 
     def uncheck_all(self, name):
@@ -258,12 +262,12 @@ class Form(object):
             form.set("eula-checkbox", True)
 
         Example: uploading a file through a ``<input type="file"
-        name="tagname">`` field (provide the path to the local file,
+        name="tagname">`` field (provide an open file object,
         and its content will be uploaded):
 
         .. code-block:: python
 
-            form.set("tagname", path_to_local_file)
+            form.set("tagname", open(path_to_local_file, "rb"))
 
         """
         for func in ("checkbox", "radio", "input", "textarea", "select"):
@@ -297,15 +301,18 @@ class Form(object):
         control['value'] = value
         for k, v in kwargs.items():
             control[k] = v
+        self._assert_valid_file_upload(control, value)
         self.form.append(control)
         return control
 
     def choose_submit(self, submit):
         """Selects the input (or button) element to use for form submission.
 
-        :param submit: The bs4.element.Tag (or just its *name*-attribute) that
-            identifies the submit element to use. If ``None``, will choose the
-            first valid submit element in the form, if one exists.
+        :param submit: The :class:`bs4.element.Tag` (or just its
+            *name*-attribute) that identifies the submit element to use. If
+            ``None``, will choose the first valid submit element in the form,
+            if one exists. If ``False``, will not use any submit element;
+            this is useful for simulating AJAX requests, for example.
 
         To simulate a normal web browser, only one submit element must be
         sent. Therefore, this does not need to be called if there is only
@@ -359,7 +366,7 @@ class Form(object):
                 # omitted from the submitted form data.
                 del inp['name']
 
-        if not found and submit is not None:
+        if not found and submit is not None and submit is not False:
             raise LinkNotFoundError(
                 "Specified submit element not found: {0}".format(submit)
             )
@@ -384,3 +391,17 @@ class Form(object):
         attrs_dict = attrs.copy()
         attrs_dict['type'] = lambda x: x and x.lower() == type_attr
         return self.form.find_all(tag_name, attrs=attrs_dict)
+        
+    def _assert_valid_file_upload(self, tag, value):
+        """Raise an exception if a multipart file input is not an open file."""
+        if (
+            is_multipart_file_upload(self.form, tag) and
+            not isinstance(value, io.IOBase)
+        ):
+            raise ValueError(
+                "From v1.3.0 onwards, you must pass an open file object "
+                'directly, e.g. `form["name"] = open("/path/to/file", "rb")`. '
+                "This change is to remediate a security vulnerability where "
+                "a malicious web server could read arbitrary files from the "
+                "client (CVE-2023-34457)."
+            )
